@@ -2,6 +2,10 @@
 name: nosql-github-assistant
 
 services:
+
+  # ==============================
+  # MongoDB - Primary Database
+  # ==============================
   mongodb:
     image: mongo:8.0
     container_name: nosql-mongodb
@@ -19,5 +23,27 @@ services:
     volumes:
       - mongodb_data:/data/db
 
+  # ==============================
+  # Elasticsearch - Search Engine
+  # ==============================
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.19.25
+    container_name: nosql-elasticsearch
+    restart: unless-stopped
+
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms768m -Xmx768m
+
+    ports:
+      - "127.0.0.1:9200:9200"
+
+    mem_limit: 2g
+
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+
 volumes:
   mongodb_data:
+  elasticsearch_data:
