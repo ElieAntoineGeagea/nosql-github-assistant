@@ -34,6 +34,10 @@ function getDatabase() {
   return database;
 }
 
+function getMongoClient() {
+  return client;
+}
+
 async function closeMongoDB() {
   await client.close();
   database = undefined;
@@ -42,5 +46,6 @@ async function closeMongoDB() {
 module.exports = {
   connectMongoDB,
   getDatabase,
+  getMongoClient,
   closeMongoDB,
 };
