@@ -1,6 +1,8 @@
 
 require("dotenv").config();
 
+const neo4j = require("neo4j-driver");
+
 const {
   connectMongoDB,
   getDatabase,
@@ -16,22 +18,28 @@ const {
 const { kafka } = require("../config/kafka");
 
 // ======================================
-// KAFKA GRAPH CONSUMER
+// CONFIGURATION
 // ======================================
 
 const consumer = kafka.consumer({
   groupId: "nosql-graph-consumer-v1",
 });
 
+const SUPPORTED_EVENTS = new Set([
+  "issue.opened",
+  "issue.updated",
+  "issue.closed",
+  "issue.reopened",
+]);
+
 let shuttingDown = false;
 
 // ======================================
-// PROCESS ISSUE EVENTS
+// PROCESS AN ISSUE EVENT
 // ======================================
 
 async function processEvent(event) {
-  // Only handle issue creation for now
-  if (event.event_type !== "issue.opened") {
+  if (!SUPPORTED_EVENTS.has(event.event_type)) {
     return;
   }
 
@@ -45,7 +53,10 @@ async function processEvent(event) {
 
   const db = getDatabase();
 
-  // 1. Retrieve original issue from MongoDB
+  // ==================================
+  // 1. GET AUTHORITATIVE ISSUE
+  // ==================================
+
   const issue = await db
     .collection("issues")
     .findOne({ _id: event.issue_id });
@@ -57,7 +68,10 @@ async function processEvent(event) {
     return;
   }
 
-  // 2. Retrieve the repository
+  // ==================================
+  // 2. VERIFY REPOSITORY
+  // ==================================
+
   const repository = await db
     .collection("repositories")
     .findOne({
@@ -70,45 +84,107 @@ async function processEvent(event) {
     return;
   }
 
-  // 3. Open a Neo4j session
+  // ==================================
+  // 3. PREPARE CURRENT ISSUE DATA
+  // ==================================
+
+  const sourceVersion = issue.current_revision || 1;
+
   const session = getNeo4jSession();
 
   try {
-    // 4. Create or update graph nodes
-    await session.executeWrite(async (tx) => {
-      await tx.run(
-        `
-        MERGE (repo:Repository {id: $repositoryId})
-        SET repo.name = $repositoryName
+    // ==================================
+    // 4. VERSION-AWARE GRAPH UPDATE
+    // ==================================
 
-        MERGE (issue:Issue {id: $issueId})
-        SET
-          issue.number = $issueNumber,
-          issue.title = $issueTitle,
-          issue.status = $issueStatus,
-          issue.repository_id = $repositoryId,
-          issue.source_version = $sourceVersion
+    const previousVersion = await session.executeWrite(
+      async (tx) => {
+        const result = await tx.run(
+          `
+          MERGE (repo:Repository {
+            id: $repositoryId
+          })
 
-        MERGE (repo)-[:HAS_ISSUE]->(issue)
-        `,
-        {
-          repositoryId: repository._id,
-          repositoryName: repository.name,
-          issueId: issue._id,
-          issueNumber: issue.number,
-          issueTitle: issue.title,
-          issueStatus: issue.status,
-          sourceVersion: issue.current_revision || 1,
+          SET repo.name = $repositoryName
+
+          MERGE (issue:Issue {
+            id: $issueId
+          })
+
+          WITH
+            repo,
+            issue,
+            coalesce(
+              issue.source_version, 0
+            ) AS previousVersion
+
+          FOREACH (
+            _ IN CASE
+              WHEN previousVersion < $sourceVersion
+              THEN [1]
+              ELSE []
+            END |
+
+            SET
+              issue.number = $issueNumber,
+              issue.title = $issueTitle,
+              issue.status = $issueStatus,
+              issue.repository_id = $repositoryId,
+              issue.source_version = $sourceVersion
+          )
+
+          MERGE (repo)-[:HAS_ISSUE]->(issue)
+
+          RETURN previousVersion
+          `,
+          {
+            repositoryId: repository._id,
+            repositoryName: repository.name,
+            issueId: issue._id,
+            issueNumber: issue.number,
+            issueTitle: issue.title,
+            issueStatus: issue.status,
+            sourceVersion,
+          }
+        );
+
+        // FIX: Support both Neo4j integers
+        // and regular JavaScript numbers.
+        const rawVersion = result.records[0]
+          .get("previousVersion");
+
+        if (neo4j.isInt(rawVersion)) {
+          return rawVersion.toNumber();
         }
-      );
-    });
+
+        return Number(rawVersion);
+      }
+    );
+
+    // ==================================
+    // 5. LOG THE RESULT
+    // ==================================
 
     console.log("------------------------------");
-    console.log("Graph updated successfully!");
+
+    if (previousVersion >= sourceVersion) {
+      console.log(
+        "Graph already at same or newer revision."
+      );
+    } else {
+      console.log("Graph synchronized successfully!");
+    }
+
+    console.log("Event type:", event.event_type);
     console.log("Repository:", repository.name);
     console.log("Issue:", issue.number);
     console.log("Issue ID:", issue._id);
+    console.log("Title:", issue.title);
+    console.log("Status:", issue.status);
+    console.log("Previous revision:", previousVersion);
+    console.log("Current revision:", sourceVersion);
     console.log("Relationship: HAS_ISSUE");
+
   } finally {
     await session.close();
   }
@@ -120,10 +196,7 @@ async function processEvent(event) {
 
 async function startGraphConsumer() {
   try {
-    // Connect to MongoDB
     await connectMongoDB();
-
-    // Connect to Neo4j
     await connectNeo4j();
 
     // Create uniqueness constraints
@@ -147,12 +220,11 @@ async function startGraphConsumer() {
       await session.close();
     }
 
-    // Connect to Kafka
+    // Connect Kafka
     await consumer.connect();
 
     console.log("Kafka graph consumer connected!");
 
-    // Subscribe to issue events
     await consumer.subscribe({
       topic: "issue.events",
       fromBeginning: true,
@@ -160,10 +232,13 @@ async function startGraphConsumer() {
 
     console.log("------------------------------");
     console.log("Graph Consumer is running...");
-    console.log("Listening for issue.opened events");
+    console.log("Supported events:");
+    console.log("- issue.opened");
+    console.log("- issue.updated");
+    console.log("- issue.closed");
+    console.log("- issue.reopened");
     console.log("------------------------------");
 
-    // Continuously process messages
     await consumer.run({
       eachMessage: async ({ message }) => {
         if (!message.value) {
@@ -179,19 +254,28 @@ async function startGraphConsumer() {
           return;
         }
 
+        if (
+          !event ||
+          typeof event !== "object" ||
+          Array.isArray(event)
+        ) {
+          console.log("Skipping invalid event");
+          return;
+        }
+
         try {
           await processEvent(event);
         } catch (error) {
           console.error(
-            "Graph event processing failed:",
+            "Failed to synchronize graph:",
             error.message
           );
 
-          // Let KafkaJS handle the failure
           throw error;
         }
       },
     });
+
   } catch (error) {
     console.error(
       "Graph Consumer failed:",
@@ -234,5 +318,4 @@ process.on("SIGTERM", () => {
   void shutdown();
 });
 
-// Start the worker
 startGraphConsumer();

@@ -14,22 +14,29 @@ const {
 const { kafka } = require("../config/kafka");
 
 // ======================================
-// KAFKA CONSUMER CONFIGURATION
+// CONFIGURATION
 // ======================================
 
 const consumer = kafka.consumer({
   groupId: "nosql-search-consumer-v1",
 });
 
+const SUPPORTED_EVENTS = new Set([
+  "issue.opened",
+  "issue.updated",
+  "issue.closed",
+  "issue.reopened",
+]);
+
 let shuttingDown = false;
 
 // ======================================
-// PROCESS A SINGLE KAFKA EVENT
+// PROCESS AN ISSUE EVENT
 // ======================================
 
 async function processEvent(event) {
-  // We currently support issue creation events.
-  if (event.event_type !== "issue.opened") {
+  // 1. Ignore unsupported event types
+  if (!SUPPORTED_EVENTS.has(event.event_type)) {
     return;
   }
 
@@ -43,7 +50,10 @@ async function processEvent(event) {
 
   const db = getDatabase();
 
-  // 1. Retrieve authoritative issue from MongoDB
+  // ==================================
+  // 2. GET AUTHORITATIVE ISSUE
+  // ==================================
+
   const issue = await db
     .collection("issues")
     .findOne({ _id: event.issue_id });
@@ -55,7 +65,10 @@ async function processEvent(event) {
     return;
   }
 
-  // 2. Verify repository is public for this prototype
+  // ==================================
+  // 3. VERIFY REPOSITORY
+  // ==================================
+
   const repository = await db
     .collection("repositories")
     .findOne({
@@ -68,7 +81,12 @@ async function processEvent(event) {
     return;
   }
 
-  // 3. Prepare searchable document
+  // ==================================
+  // 4. PREPARE CURRENT ISSUE DOCUMENT
+  // ==================================
+
+  const sourceVersion = issue.current_revision || 1;
+
   const searchDocument = {
     record_id: issue._id,
     record_type: "issue",
@@ -79,44 +97,85 @@ async function processEvent(event) {
     content: `${issue.title}\n${issue.body || ""}`,
     status: issue.status,
     labels: issue.labels || [],
-    source_version: issue.current_revision || 1,
+    source_version: sourceVersion,
     created_at: issue.created_at,
     updated_at: issue.updated_at || issue.created_at,
   };
 
-  // 4. Insert or replace record in Elasticsearch
-  await elasticsearchClient.index({
+  // ==================================
+  // 5. VERSION-AWARE ELASTICSEARCH UPDATE
+  // ==================================
+
+  const response = await elasticsearchClient.update({
     index: "issue_activity",
     id: issue._id,
-    document: searchDocument,
+    retry_on_conflict: 3,
     refresh: "wait_for",
+
+    script: {
+      lang: "painless",
+
+      source: `
+        if (
+          ctx._source.source_version == null ||
+          ctx._source.source_version < params.version
+        ) {
+          ctx._source.putAll(params.document);
+        } else {
+          ctx.op = 'noop';
+        }
+      `,
+
+      params: {
+        version: sourceVersion,
+        document: searchDocument,
+      },
+    },
+
+    // Insert this document if it doesn't exist.
+    upsert: searchDocument,
   });
 
+  // ==================================
+  // 6. LOG THE RESULT
+  // ==================================
+
   console.log("------------------------------");
-  console.log("Issue indexed successfully!");
+
+  if (response.result === "noop") {
+    console.log("Document already at same or newer revision.");
+  } else {
+    console.log("Issue synchronized successfully!");
+  }
+
+  console.log("Event type:", event.event_type);
+  console.log("Issue:", issue.number);
   console.log("Issue ID:", issue._id);
   console.log("Title:", issue.title);
-  console.log("Elasticsearch index: issue_activity");
+  console.log("Status:", issue.status);
+  console.log("Revision:", sourceVersion);
+  console.log("Elasticsearch result:", response.result);
+  console.log("Index: issue_activity");
 }
 
 // ======================================
-// START SEARCH CONSUMER
+// START CONSUMER
 // ======================================
 
 async function startSearchConsumer() {
   try {
-    // 1. Connect to MongoDB
+    // Connect MongoDB
     await connectMongoDB();
 
-    // 2. Verify Elasticsearch
+    // Verify Elasticsearch
     await elasticsearchClient.info();
     console.log("Elasticsearch connected successfully!");
 
-    // 3. Connect to Kafka
+    // Connect Kafka
     await consumer.connect();
     console.log("Kafka consumer connected!");
 
-    // 4. Subscribe to events
+    // Subscribe to the existing topic
     await consumer.subscribe({
       topic: "issue.events",
       fromBeginning: true,
@@ -124,10 +183,14 @@ async function startSearchConsumer() {
 
     console.log("------------------------------");
     console.log("Search Consumer is running...");
-    console.log("Listening for issue.opened events");
+    console.log("Supported events:");
+    console.log("- issue.opened");
+    console.log("- issue.updated");
+    console.log("- issue.closed");
+    console.log("- issue.reopened");
     console.log("------------------------------");
 
-    // 5. Continuously process messages
+    // Process messages continuously
     await consumer.run({
       eachMessage: async ({ message }) => {
         if (!message.value) {
@@ -143,16 +206,20 @@ async function startSearchConsumer() {
           return;
         }
 
+        if (!event || typeof event !== "object") {
+          console.log("Skipping invalid event");
+          return;
+        }
+
         try {
           await processEvent(event);
         } catch (error) {
           console.error(
-            "Failed to index event:",
+            "Failed to synchronize issue:",
             error.message
           );
 
-          // Do not treat a failed indexing attempt
-          // as successfully processed.
+          // Do not acknowledge processing as successful
           throw error;
         }
       },
@@ -200,5 +267,5 @@ process.on("SIGTERM", () => {
   void shutdown();
 });
 
-// Start the worker
+// Start worker
 startSearchConsumer();

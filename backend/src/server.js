@@ -28,6 +28,14 @@ const {
   closeNeo4j,
 } = require("./config/neo4j");
 
+const issueSearchRouter = require("./routes/issue-search");
+
+// NEW: Issue modification service
+const {
+  IssueError,
+  updateIssueWithOutbox,
+} = require("./services/issue-mutations");
+
 const app = express();
 const PORT = process.env.PORT || 5000;
 
@@ -204,6 +212,12 @@ app.get("/api/issues", async (req, res) => {
 });
 
 // ======================================
+// ISSUE SEARCH - ELASTICSEARCH
+// ======================================
+
+app.use("/api/issues/search", issueSearchRouter);
+
+// ======================================
 // CREATE ISSUE WITH TRANSACTIONAL OUTBOX
 // ======================================
 
@@ -220,7 +234,6 @@ app.post("/api/issues", verifyDemoWriteKey, async (req, res) => {
       labels = [],
     } = req.body || {};
 
-    // Validate the request
     if (
       typeof repository_id !== "string" ||
       !repository_id.trim() ||
@@ -289,12 +302,10 @@ app.post("/api/issues", verifyDemoWriteKey, async (req, res) => {
       },
     };
 
-    // Start a MongoDB transaction
     const session = client.startSession();
 
     try {
       await session.withTransaction(async () => {
-        // Verify the repository within the transaction
         const repository = await db
           .collection("repositories")
           .findOne(
@@ -311,7 +322,6 @@ app.post("/api/issues", verifyDemoWriteKey, async (req, res) => {
           throw error;
         }
 
-        // Save both records atomically
         await db
           .collection("issues")
           .insertOne(issue, { session });
@@ -324,7 +334,6 @@ app.post("/api/issues", verifyDemoWriteKey, async (req, res) => {
       await session.endSession();
     }
 
-    // Both records have been committed
     res.status(201).json({
       success: true,
       message: "Issue and outbox event saved atomically",
@@ -364,6 +373,58 @@ app.post("/api/issues", verifyDemoWriteKey, async (req, res) => {
     });
   }
 });
+
+// ======================================
+// NEW: UPDATE OR CLOSE EXISTING ISSUE
+// ======================================
+
+app.patch(
+  "/api/issues/:id",
+  verifyDemoWriteKey,
+  async (req, res) => {
+    try {
+      const issueId = req.params.id;
+
+      const { expectedRevision, ...patch } = req.body || {};
+
+      // Call our transactional update service
+      const result = await updateIssueWithOutbox({
+        issueId,
+        expectedRevision,
+        patch,
+      });
+
+      return res.status(200).json(result);
+
+    } catch (error) {
+      // Handle expected validation/conflict errors
+      if (error instanceof IssueError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          error: error.message,
+        });
+      }
+
+      // MongoDB write conflict
+      if (
+        error.code === 112 ||
+        error.hasErrorLabel?.("TransientTransactionError")
+      ) {
+        return res.status(409).json({
+          success: false,
+          error: "Concurrent modification detected. Retry.",
+        });
+      }
+
+      console.error("Issue update error:", error);
+
+      return res.status(500).json({
+        success: false,
+        error: "Failed to update issue",
+      });
+    }
+  }
+);
 
 // ======================================
 // TRACE ISSUE RELATIONSHIPS - NEO4J
