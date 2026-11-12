@@ -37,12 +37,15 @@ test("GitHub client paginates and obeys maximum size", async () => {
     const page = Number(url.searchParams.get("page"));
     return {
       ok: true,
-      json: async () => page === 1 ? [{ id: 1 }, { id: 2 }] : [{ id: 3 }],
+      json: async () => page === 1
+        ? Array.from({ length: 100 }, (_, i) => ({ id: i + 1 }))
+        : [{ id: 101 }],
     };
   };
   const client = createGitHubClient({ fetchImpl, token: "" });
-  const results = await client.list("/repos/a/b/issues", { max: 3 });
-  assert.deepEqual(results.map(x => x.id), [1, 2, 3]);
+  const results = await client.list("/repos/a/b/issues", { max: 101 });
+  assert.equal(results.length, 101);
+  assert.deepEqual(results.slice(-2).map(x => x.id), [100, 101]);
   assert.equal(seen.length, 2);
 });
 
