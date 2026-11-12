@@ -7,7 +7,8 @@
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
     "test": "node --test test/github-importer.test.js",
-    "import:github": "node src/scripts/import-github.js"
+    "import:github": "node src/scripts/import-github.js",
+    "verify:github": "node src/scripts/verify-github-sync.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
