@@ -2,6 +2,7 @@
 const express = require("express");
 
 const { getDatabase } = require("../config/mongodb");
+const { findAccessibleRepository } = require("../security/repository-access");
 const {
   elasticsearchClient,
 } = require("../config/elasticsearch");
@@ -78,12 +79,7 @@ router.get("/", async (req, res) => {
     // 2. CHECK REPOSITORY VISIBILITY
     // ==================================
 
-    const repository = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const repository = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!repository) {
       return res.status(404).json({
@@ -159,12 +155,7 @@ router.get("/", async (req, res) => {
     // 6. RECHECK REPOSITORY VISIBILITY
     // ==================================
 
-    const stillPublic = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const stillPublic = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!stillPublic) {
       return res.status(404).json({
