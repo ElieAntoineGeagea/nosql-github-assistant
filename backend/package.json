@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "import:github": "node src/scripts/import-github.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
