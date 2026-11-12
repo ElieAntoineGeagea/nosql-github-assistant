@@ -36,5 +36,8 @@ jobs:
           node --check src/ingestion/import-public-repository.js
           node --check src/scripts/import-github.js
           node --check src/scripts/verify-github-sync.js
+          node --check src/ingestion/trace-evidence.js
+          node --check src/ingestion/import-release-traces.js
+          node --check src/scripts/import-release-traces.js
       - name: Run unit tests
         run: npm test
