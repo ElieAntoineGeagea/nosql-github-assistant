@@ -35,5 +35,6 @@ jobs:
           node --check src/ingestion/chunk-markdown.js
           node --check src/ingestion/import-public-repository.js
           node --check src/scripts/import-github.js
+          node --check src/scripts/verify-github-sync.js
       - name: Run unit tests
         run: npm test
