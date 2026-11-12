@@ -46,6 +46,6 @@ test("Only valid refs enter API compare paths", () => {
   assert.equal(isFullCommitSha("a1b2c3"), false);
   assert.equal(validReleaseTag("v5.1.0"), true);
   assert.equal(validReleaseTag("v5/fix-1"), true);
-  assert.equal(validReleaseTag("../bad"), true);
+  assert.equal(validReleaseTag("../bad"), false);
   assert.equal(validReleaseTag("tag with spaces"), false);
 });
