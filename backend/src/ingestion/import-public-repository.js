@@ -34,7 +34,8 @@ async function ensureIndexes(db, elasticsearch) {
           title: { type: "text" },
           section: { type: "text" },
           content: { type: "text" },
-          revision: { type: "keyword" },
+          revision: { type: "integer" },
+          source_revision: { type: "keyword" },
           source_url: { type: "keyword" },
           release_ids: { type: "keyword" },
           chunk_index: { type: "integer" },
@@ -158,13 +159,23 @@ async function saveDocument({ db, elasticsearch, repositoryId, id, path, title,
   const chunks = chunkMarkdown(content.slice(0, 300000));
   const now = new Date();
 
-  await db.collection("documents").updateOne(
+  // Existing knowledge_chunks records use a numeric revision.
+  // Keep that schema while retaining GitHub's SHA/identifier separately.
+  const documents = db.collection("documents");
+  const existing = await documents.findOne({ _id: id });
+  const documentRevision = existing?.source_revision === String(revision)
+    ? (existing.revision || 1)
+    : (existing?.revision || 0) + 1;
+
+  await documents.updateOne(
     { _id: id },
     {
       $set: {
         repository_id: repositoryId,
         path, title, content: content.slice(0, 300000),
-        revision, source_url: sourceUrl, release_ids: releaseIds,
+        revision: documentRevision,
+        source_revision: String(revision),
+        source_url: sourceUrl, release_ids: releaseIds,
         is_current: true, updated_at: now,
       },
     },
@@ -183,7 +194,8 @@ async function saveDocument({ db, elasticsearch, repositoryId, id, path, title,
       title,
       section: path,
       content: chunk.content,
-      revision,
+      revision: documentRevision,
+      source_revision: String(revision),
       source_url: sourceUrl,
       release_ids: releaseIds,
       is_current: true,
