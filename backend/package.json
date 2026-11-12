@@ -6,9 +6,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "node --watch src/server.js",
-    "test": "node --test test/github-importer.test.js",
+    "test": "node --test test/github-importer.test.js test/security.test.js",
     "import:github": "node src/scripts/import-github.js",
-    "verify:github": "node src/scripts/verify-github-sync.js"
+    "verify:github": "node src/scripts/verify-github-sync.js",
+    "seed:private-demo": "node src/scripts/seed-private-demo.js"
   },
   "dependencies": {
     "@elastic/elasticsearch": "^8.19.2",
