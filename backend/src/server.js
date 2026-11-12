@@ -564,12 +564,7 @@ app.get("/api/search", async (req, res) => {
       });
     }
 
-    const repository = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const repository = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!repository) {
       return res.status(404).json({
