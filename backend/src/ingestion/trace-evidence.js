@@ -49,7 +49,8 @@ function isFullCommitSha(value) {
 
 function validReleaseTag(value) {
   return typeof value === "string" && value.length <= 100 &&
-    /^[a-zA-Z0-9_.\/-]+$/.test(value) && value !== "." && value !== "..";
+    /^[a-zA-Z0-9_.\/-]+$/.test(value) &&
+    value.split("/").every(segment => segment !== "." && segment !== ".." && segment.length > 0);
 }
 
 module.exports = {
