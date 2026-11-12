@@ -37,5 +37,6 @@ jobs:
           node --check src/security/demo-key.js
           node --check src/security/passwords.js
           node --check src/security/repository-access.js
+          node --check src/scripts/seed-private-demo.js
       - name: Run isolated security unit tests
         run: node --test test/security.test.js
