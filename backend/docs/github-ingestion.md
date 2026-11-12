@@ -56,3 +56,15 @@ The importer runs on the user's computer, not inside GitHub. A successful code c
 - A failed import can leave a partial import; rerun it after resolving the error.
 - Search results are eventually consistent; do not use historical content as current security advice without verifying the source revision.
 - The public repository check in the backend is separate from any future authentication and user-specific permissions.
+
+## Verify end-to-end synchronization
+
+After the import, with your local outbox publisher and both Kafka consumers running, run:
+
+```powershell
+npm run verify:github -- expressjs/express
+```
+
+This compares MongoDB imported issue/comment/document counts with outbox status, Elasticsearch indexed issue/comment/chunk counts, and Neo4j issue nodes/relationships. It reports success only when the imported issues have been synchronized. This is a count-and-state verification, not a proof of exactly-once delivery or full consistency for every property.
+
+If the check reports **NOT FULLY SYNCHRONIZED**, keep the workers running and inspect their logs. The check is read-only, and may safely be repeated. It does not start the background workers itself.
