@@ -1,5 +1,5 @@
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api';
 
 const NAV = [
@@ -51,6 +51,14 @@ export default function App() {
   const [trace, setTrace] = useState(null);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
+  const [token, setToken] = useState('');
+  const [viewer, setViewer] = useState(null);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginUsername, setLoginUsername] = useState('demo_reader_1');
+  const [loginPassword, setLoginPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState('');
+  const accessEpoch = useRef(0);
 
   const repository = repositories.find((item) => item._id === repoId);
   const summary = useMemo(() => ({
@@ -60,15 +68,62 @@ export default function App() {
   }), [issues]);
 
   const loadRepositories = useCallback(async () => {
+    const epoch = accessEpoch.current;
     setBusy('repositories'); setError('');
     try {
-      const data = await api.repositories();
+      const data = await api.repositories(token);
+      if (epoch !== accessEpoch.current) return;
       const items = data.repositories || [];
       setRepositories(items);
       setRepoId((current) => items.some((item) => item._id === current) ? current : (items[0]?._id || ''));
-    } catch (e) { setError(e.message); }
-    finally { setBusy(''); }
-  }, []);
+    } catch (e) { if (epoch === accessEpoch.current) setError(e.message); }
+    finally { if (epoch === accessEpoch.current) setBusy(''); }
+  }, [token]);
+
+  function resetRepositoryData() {
+    accessEpoch.current += 1;
+    setRepoId('');
+    setRepositories([]);
+    setIssues([]);
+    setMatches([]);
+    setSelected(null);
+    setDocuments([]);
+    setTrace(null);
+    setError('');
+  }
+
+  async function signIn(event) {
+    event.preventDefault();
+    if (!loginUsername.trim() || !loginPassword) return;
+    setAuthError('');
+    setAuthBusy(true);
+    try {
+      const data = await api.login(loginUsername.trim(), loginPassword);
+      resetRepositoryData();
+      setToken(data.token);
+      setViewer(data.user);
+      setLoginPassword('');
+      setLoginOpen(false);
+    } catch (e) {
+      setAuthError(e.message);
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function signOut() {
+    const oldToken = token;
+    resetRepositoryData();
+    setViewer(null);
+    setToken('');
+    setLoginPassword('');
+    setAuthError('');
+    try {
+      if (oldToken) await api.logout(oldToken);
+    } catch (e) {
+      setError('Signed out locally. Server logout could not be confirmed: ' + e.message);
+    }
+  }
 
   useEffect(() => { loadRepositories(); }, [loadRepositories]);
 
@@ -76,57 +131,69 @@ export default function App() {
     setIssues([]); setMatches([]); setTrace(null); setDocuments([]); setSelected(null);
     if (!repoId) return;
     let active = true;
-    api.issues(repoId).then((data) => {
+    api.issues(repoId, token).then((data) => {
       if (active) setIssues(data.issues || []);
     }).catch((e) => { if (active) setError(e.message); });
     return () => { active = false; };
-  }, [repoId]);
+  }, [repoId, token]);
 
   async function searchIssues(event) {
     event?.preventDefault();
     if (!repoId) return;
+    const epoch = accessEpoch.current;
     setBusy('issues'); setError('');
     try {
-      const data = await api.searchIssues(repoId, keyword.trim(), status, label.trim());
-      setMatches(data.results || []);
-    } catch (e) { setError(e.message); }
-    finally { setBusy(''); }
+      const data = await api.searchIssues(repoId, keyword.trim(), status, label.trim(), token);
+      if (epoch === accessEpoch.current) setMatches(data.results || []);
+    } catch (e) { if (epoch === accessEpoch.current) setError(e.message); }
+    finally { if (epoch === accessEpoch.current) setBusy(''); }
   }
 
   useEffect(() => {
     if (view !== 'issues' || !repoId) return;
     let active = true;
-    api.searchIssues(repoId, '', 'all', '').then((data) => {
+    api.searchIssues(repoId, '', 'all', '', token).then((data) => {
       if (active) setMatches(data.results || []);
     }).catch((e) => { if (active) setError(e.message); });
     return () => { active = false; };
-  }, [repoId, view]);
+  }, [repoId, view, token]);
 
   async function searchDocuments(event) {
     event.preventDefault();
     if (!repoId || !docKeyword.trim()) return;
+    const epoch = accessEpoch.current;
     setBusy('docs'); setError('');
     try {
-      const data = await api.searchDocs(repoId, docKeyword.trim(), release.trim());
-      setDocuments(data.results || []);
-    } catch (e) { setError(e.message); }
-    finally { setBusy(''); }
+      const data = await api.searchDocs(repoId, docKeyword.trim(), release.trim(), token);
+      if (epoch === accessEpoch.current) setDocuments(data.results || []);
+    } catch (e) { if (epoch === accessEpoch.current) setError(e.message); }
+    finally { if (epoch === accessEpoch.current) setBusy(''); }
   }
 
   async function traceIssue(id) {
     const target = id || traceId;
     if (!target.trim()) return;
+    const epoch = accessEpoch.current;
     setTraceId(target); setView('trace'); setBusy('trace'); setError('');
-    try { setTrace(await api.trace(target)); }
-    catch (e) { setTrace(null); setError(e.message); }
-    finally { setBusy(''); }
+    try {
+      const result = await api.trace(target, token);
+      if (epoch === accessEpoch.current) setTrace(result);
+    }
+    catch (e) {
+      if (epoch === accessEpoch.current) { setTrace(null); setError(e.message); }
+    }
+    finally { if (epoch === accessEpoch.current) setBusy(''); }
   }
 
   async function refresh() {
     await loadRepositories();
     if (repoId) {
-      try { const data = await api.issues(repoId); setIssues(data.issues || []); }
-      catch (e) { setError(e.message); }
+      const epoch = accessEpoch.current;
+      try {
+        const data = await api.issues(repoId, token);
+        if (epoch === accessEpoch.current) setIssues(data.issues || []);
+      }
+      catch (e) { if (epoch === accessEpoch.current) setError(e.message); }
     }
   }
 
@@ -143,10 +210,17 @@ export default function App() {
       <div className="brand"><span className="mark">◈</span><div><b>atlas<span>.</span></b><small>REPOSITORY INTELLIGENCE</small></div></div>
       <div className="nav-label">WORKSPACE</div>
       <nav>{NAV.map(([id, name, symbol]) => <button key={id} type="button" onClick={() => setView(id)} className={view === id ? 'active' : ''}><span className="nav-symbol">{symbol}</span>{name}</button>)}</nav>
-      <div className="sidebar-bottom"><b>NoSQL Project 19</b><small>Local prototype · public data</small></div>
+      <div className="sidebar-bottom"><b>NoSQL Project 19</b><small>Local prototype · repository access</small></div>
     </aside>
     <main className="main">
-      <header className="topbar"><div>Workspace <span>/</span> <b>{title}</b></div><div className="top-actions"><span className="public-indicator">● Public mode</span><button onClick={refresh} disabled={busy === 'repositories'}>↻ Refresh</button><span className="avatar">D</span></div></header>
+      <header className="topbar"><div>Workspace <span>/</span> <b>{title}</b></div><div className="top-actions">
+        <span className="public-indicator">{viewer ? '● Signed in: ' + viewer.username : '● Public mode'}</span>
+        <button onClick={refresh} disabled={busy === 'repositories'}>↻ Refresh</button>
+        {viewer
+          ? <button type="button" onClick={signOut} className="auth-action">Sign out</button>
+          : <button type="button" onClick={() => { setAuthError(''); setLoginOpen(true); }} className="auth-action">Sign in</button>}
+        <span className="avatar">{viewer ? viewer.username[0].toUpperCase() : 'D'}</span>
+      </div></header>
       <div className="content">
         <div className="heading-row"><div><span className="eyebrow">PROJECT INTELLIGENCE / {view.toUpperCase()}</span><h1>{title}</h1><p>{subtitle}</p></div>
         <label className="repository-selector">ACTIVE REPOSITORY
@@ -156,7 +230,7 @@ export default function App() {
           </select>
         </label></div>
 
-        {error && <div className="error" role="alert"><span>{error}. Check that the Express server is running.</span><button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
+        {error && <div className="error" role="alert"><span>{error}</span><button onClick={() => setError('')} aria-label="Dismiss error">×</button></div>}
 
         {view === 'overview' && <>
           <section className="metrics">
@@ -164,7 +238,7 @@ export default function App() {
               ['▤', 'Tracked issues', summary.all, 'Authoritative MongoDB records'],
               ['●', 'Open issues', summary.open, 'Currently active'],
               ['✓', 'Closed issues', summary.closed, 'Resolved and tracked'],
-              ['◈', 'Public repositories', repositories.length, 'Available to this workspace'],
+              ['◈', 'Accessible repositories', repositories.length, viewer ? 'Public and permitted private' : 'Public repositories'],
             ].map(([icon, label, number, description]) => <article className="metric" key={label}><div className="metric-icon">{icon}</div><span>{label}</span><strong>{number}</strong><small>{description}</small></article>)}
           </section>
           <div className="overview-grid"><section className="panel">
@@ -220,8 +294,20 @@ export default function App() {
           </section> : <section className="panel"><Empty title="Explore release history" text="Enter an issue ID to inspect its recorded source-control relationships." /></section>}
         </>}
 
-        <footer>Student proof of concept · Public access only · Derived indexes are eventually consistent · Source-line metadata requires provenance verification.</footer>
+        <footer>Student proof of concept · Private data requires a session and explicit access grant · Derived indexes are eventually consistent · Source-line metadata requires provenance verification.</footer>
       </div>
     </main>
+    {loginOpen && <div className="auth-overlay">
+      <form className="login-dialog" onSubmit={signIn} aria-label="Sign in to Atlas">
+        <div className="auth-title-row"><div><span className="eyebrow">ATLAS ACCESS</span><h2>Sign in</h2><p>Use your existing local test account.</p></div>
+          <button type="button" className="auth-close" onClick={() => { setLoginPassword(''); setAuthError(''); setLoginOpen(false); }} aria-label="Close sign-in form">×</button>
+        </div>
+        {authError && <div className="error" role="alert">{authError}</div>}
+        <label>USERNAME<input autoComplete="username" value={loginUsername} onChange={(event) => setLoginUsername(event.target.value)} required maxLength={32} /></label>
+        <label>PASSWORD<input type="password" autoComplete="current-password" value={loginPassword} onChange={(event) => setLoginPassword(event.target.value)} required /></label>
+        <button className="primary" type="submit" disabled={authBusy}>{authBusy ? 'Signing in...' : 'Sign in'}</button>
+        <p className="auth-note">The session token is kept in memory only. Closing or refreshing this page signs you out. Do not use your development key here.</p>
+      </form>
+    </div>}
   </div>;
 }
