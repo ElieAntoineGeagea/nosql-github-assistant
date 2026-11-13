@@ -27,6 +27,7 @@ const {
 const issueSearchRouter = require("./routes/issue-search");
 const { authRouter, adminRouter } = require("./routes/auth");
 const { verifyDemoWriteKey } = require("./security/demo-key");
+const { formatTraceRows, traceSummary } = require("./services/trace-format");
 const {
   viewerFromRequest,
   findAccessibleRepository,
@@ -445,6 +446,8 @@ app.get("/api/issues/:id/trace", async (req, res) => {
 
     session = getNeo4jSession();
 
+    // Follow recorded issue -> PR -> merge commit edges even when the
+    // commit has not been linked to any release.
     const graphResult = await session.run(
       `
       MATCH
@@ -455,16 +458,20 @@ app.get("/api/issues/:id/trace", async (req, res) => {
         (pr:PullRequest)
         -[:INCLUDES]->
         (c:Commit)
-        -[:INCLUDED_IN]->
-        (r:Release)
+      WHERE (pr.repository_id IS NULL OR pr.repository_id = $repositoryId)
+        AND (c.repository_id IS NULL OR c.repository_id = $repositoryId)
+      OPTIONAL MATCH (c)-[rel:INCLUDED_IN]->(r:Release)
+      WHERE r.repository_id IS NULL OR r.repository_id = $repositoryId
 
       RETURN DISTINCT
         pr.number AS pullRequestNumber,
         pr.title AS pullRequestTitle,
+        pr.source_url AS pullRequestUrl,
         c.sha AS commitSha,
         c.message AS commitMessage,
         r.id AS releaseId,
-        r.tag AS releaseTag
+        r.tag AS releaseTag,
+        rel.evidence AS releaseEvidence
       `,
       {
         issueId,
@@ -472,20 +479,8 @@ app.get("/api/issues/:id/trace", async (req, res) => {
       }
     );
 
-    const paths = graphResult.records.map((record) => ({
-      pull_request: {
-        number: record.get("pullRequestNumber")?.toNumber(),
-        title: record.get("pullRequestTitle"),
-      },
-      commit: {
-        sha: record.get("commitSha"),
-        message: record.get("commitMessage"),
-      },
-      release: {
-        id: record.get("releaseId"),
-        tag: record.get("releaseTag"),
-      },
-    }));
+    const paths = formatTraceRows(graphResult.records);
+    const summary = traceSummary(paths);
 
     const stillPublic = await findAccessibleRepository(db, issue.repository_id, req.viewer);
 
@@ -504,7 +499,7 @@ app.get("/api/issues/:id/trace", async (req, res) => {
         title: issue.title,
         repository_id: issue.repository_id,
       },
-      count: paths.length,
+      ...summary,
       paths,
     });
   } catch (error) {
