@@ -6,3 +6,18 @@
 
 .trace-path .unverified-release{border-style:dashed;background:#f8f9fc}
 .trace-path .unverified-release strong{color:#6c7d99}
+
+/* Local prototype sign-in: no browser-persisted credentials. */
+.auth-action{border:1px solid #d8e1f0!important;background:#f7f9ff!important;color:#5064ba!important;padding:8px 12px;border-radius:8px;font-weight:750}
+.auth-action:hover{background:#eef2ff!important}
+.auth-overlay{position:fixed;z-index:200;inset:0;background:#101c33ae;display:flex;align-items:center;justify-content:center;padding:18px}
+.login-dialog{width:min(100%,430px);max-height:calc(100vh - 36px);overflow-y:auto;background:white;border-radius:16px;padding:28px;box-shadow:0 24px 72px #0d193846;display:grid;gap:17px}
+.auth-title-row{display:flex;align-items:flex-start;justify-content:space-between}
+.auth-title-row h2{font-size:24px;color:#1d2c46;margin:9px 0}
+.auth-title-row p{margin:0;color:#8c9aae;font-size:13px}
+.auth-close{border:0;background:#eef1f8;color:#60748e;border-radius:50%;width:31px;height:31px;font-size:20px}
+.login-dialog label{display:grid;gap:8px;color:#7f91ad;font-size:10px;font-weight:800;letter-spacing:1px}
+.login-dialog input{width:100%;font-size:14px}
+.login-dialog .primary{width:100%;font-size:13px}
+.auth-note{color:#7f90a6;font-size:11px;line-height:1.6;margin:0}
+@media(max-width:760px){.top-actions{gap:5px}.auth-action{padding:7px}.login-dialog{padding:22px}.auth-overlay{align-items:flex-start;padding-top:45px}}
