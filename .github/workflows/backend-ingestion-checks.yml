@@ -1,0 +1,45 @@
+name: Backend ingestion checks
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ingestion-checks.yml"
+  push:
+    branches:
+      - "feature/github-ingestion"
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-ingestion-checks.yml"
+
+jobs:
+  ingestion:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate ingestion source syntax
+        run: |
+          node --check src/ingestion/github-api.js
+          node --check src/ingestion/chunk-markdown.js
+          node --check src/ingestion/import-public-repository.js
+          node --check src/scripts/import-github.js
+          node --check src/scripts/verify-github-sync.js
+          node --check src/ingestion/trace-evidence.js
+          node --check src/ingestion/import-release-traces.js
+          node --check src/scripts/import-release-traces.js
+          node --check src/services/trace-format.js
+          node --check src/server.js
+      - name: Run unit tests
+        run: npm test

@@ -1,0 +1,42 @@
+name: Repository permission security checks
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/repository-permissions.yml"
+  push:
+    branches:
+      - "feature/repository-permissions"
+    paths:
+      - "backend/**"
+      - ".github/workflows/repository-permissions.yml"
+
+jobs:
+  security-unit-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - name: Install backend dependencies
+        run: npm ci
+      - name: Validate updated route and security syntax
+        run: |
+          node --check src/server.js
+          node --check src/routes/issue-search.js
+          node --check src/routes/auth.js
+          node --check src/security/demo-key.js
+          node --check src/security/passwords.js
+          node --check src/security/repository-access.js
+          node --check src/scripts/seed-private-demo.js
+      - name: Run isolated security unit tests
+        run: node --test test/security.test.js

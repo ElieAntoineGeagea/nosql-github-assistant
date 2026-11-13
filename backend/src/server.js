@@ -5,11 +5,7 @@ const express = require("express");
 const cors = require("cors");
 const helmet = require("helmet");
 
-const {
-  randomUUID,
-  createHash,
-  timingSafeEqual,
-} = require("node:crypto");
+const { randomUUID } = require("node:crypto");
 
 const {
   connectMongoDB,
@@ -29,6 +25,14 @@ const {
 } = require("./config/neo4j");
 
 const issueSearchRouter = require("./routes/issue-search");
+const { authRouter, adminRouter } = require("./routes/auth");
+const { verifyDemoWriteKey } = require("./security/demo-key");
+const { formatTraceRows, traceSummary } = require("./services/trace-format");
+const {
+  viewerFromRequest,
+  findAccessibleRepository,
+  listAccessibleRepositories,
+} = require("./security/repository-access");
 
 // NEW: Issue modification service
 const {
@@ -57,37 +61,19 @@ app.use(express.json({ limit: "1mb" }));
 // DEVELOPMENT WRITE AUTHORIZATION
 // ======================================
 
-function verifyDemoWriteKey(req, res, next) {
-  if (process.env.NODE_ENV === "production") {
-    return res.status(403).json({
-      success: false,
-      error: "Demo write access is disabled in production",
-    });
+// The development write key middleware lives in security/demo-key.js.
+// Read sessions on every request so access revocation takes effect immediately.
+app.use(async (req, res, next) => {
+  try {
+    req.viewer = await viewerFromRequest(getDatabase(), req);
+    next();
+  } catch (error) {
+    console.error("Session lookup failed:", error);
+    res.status(503).json({ success: false, error: "Authentication service unavailable" });
   }
-
-  const expected = process.env.DEMO_WRITE_KEY;
-
-  if (!expected) {
-    return res.status(503).json({
-      success: false,
-      error: "Demo write access is not configured",
-    });
-  }
-
-  const supplied = req.get("x-demo-write-key") || "";
-
-  const hash = (value) =>
-    createHash("sha256").update(value).digest();
-
-  if (!timingSafeEqual(hash(expected), hash(supplied))) {
-    return res.status(401).json({
-      success: false,
-      error: "Invalid demo write key",
-    });
-  }
-
-  next();
-}
+});
+app.use("/api/auth", authRouter);
+app.use("/api/admin", adminRouter);
 
 // ======================================
 // MAIN ROUTE
@@ -133,12 +119,7 @@ app.get("/api/repositories", async (req, res) => {
   try {
     const db = getDatabase();
 
-    const repositories = await db
-      .collection("repositories")
-      .find({ visibility: "public" })
-      .sort({ name: 1 })
-      .limit(50)
-      .toArray();
+    const repositories = await listAccessibleRepositories(db, req.viewer, 50);
 
     res.status(200).json({
       success: true,
@@ -174,12 +155,7 @@ app.get("/api/issues", async (req, res) => {
       });
     }
 
-    const repository = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const repository = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!repository) {
       return res.status(404).json({
@@ -459,12 +435,7 @@ app.get("/api/issues/:id/trace", async (req, res) => {
       });
     }
 
-    const repository = await db
-      .collection("repositories")
-      .findOne({
-        _id: issue.repository_id,
-        visibility: "public",
-      });
+    const repository = await findAccessibleRepository(db, issue.repository_id, req.viewer);
 
     if (!repository) {
       return res.status(404).json({
@@ -475,6 +446,8 @@ app.get("/api/issues/:id/trace", async (req, res) => {
 
     session = getNeo4jSession();
 
+    // Follow recorded issue -> PR -> merge commit edges even when the
+    // commit has not been linked to any release.
     const graphResult = await session.run(
       `
       MATCH
@@ -485,16 +458,20 @@ app.get("/api/issues/:id/trace", async (req, res) => {
         (pr:PullRequest)
         -[:INCLUDES]->
         (c:Commit)
-        -[:INCLUDED_IN]->
-        (r:Release)
+      WHERE (pr.repository_id IS NULL OR pr.repository_id = $repositoryId)
+        AND (c.repository_id IS NULL OR c.repository_id = $repositoryId)
+      OPTIONAL MATCH (c)-[rel:INCLUDED_IN]->(r:Release)
+      WHERE r.repository_id IS NULL OR r.repository_id = $repositoryId
 
       RETURN DISTINCT
         pr.number AS pullRequestNumber,
         pr.title AS pullRequestTitle,
+        pr.source_url AS pullRequestUrl,
         c.sha AS commitSha,
         c.message AS commitMessage,
         r.id AS releaseId,
-        r.tag AS releaseTag
+        r.tag AS releaseTag,
+        rel.evidence AS releaseEvidence
       `,
       {
         issueId,
@@ -502,27 +479,10 @@ app.get("/api/issues/:id/trace", async (req, res) => {
       }
     );
 
-    const paths = graphResult.records.map((record) => ({
-      pull_request: {
-        number: record.get("pullRequestNumber")?.toNumber(),
-        title: record.get("pullRequestTitle"),
-      },
-      commit: {
-        sha: record.get("commitSha"),
-        message: record.get("commitMessage"),
-      },
-      release: {
-        id: record.get("releaseId"),
-        tag: record.get("releaseTag"),
-      },
-    }));
+    const paths = formatTraceRows(graphResult.records);
+    const summary = traceSummary(paths);
 
-    const stillPublic = await db
-      .collection("repositories")
-      .findOne({
-        _id: issue.repository_id,
-        visibility: "public",
-      });
+    const stillPublic = await findAccessibleRepository(db, issue.repository_id, req.viewer);
 
     if (!stillPublic) {
       return res.status(404).json({
@@ -539,7 +499,7 @@ app.get("/api/issues/:id/trace", async (req, res) => {
         title: issue.title,
         repository_id: issue.repository_id,
       },
-      count: paths.length,
+      ...summary,
       paths,
     });
   } catch (error) {
@@ -599,12 +559,7 @@ app.get("/api/search", async (req, res) => {
       });
     }
 
-    const repository = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const repository = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!repository) {
       return res.status(404).json({
@@ -647,12 +602,7 @@ app.get("/api/search", async (req, res) => {
       },
     });
 
-    const stillPublic = await db
-      .collection("repositories")
-      .findOne({
-        _id: repositoryId,
-        visibility: "public",
-      });
+    const stillPublic = await findAccessibleRepository(db, repositoryId, req.viewer);
 
     if (!stillPublic) {
       return res.status(404).json({
@@ -727,6 +677,18 @@ async function startServer() {
       status: 1,
       created_at: 1,
     });
+
+    await db.collection("users").createIndex(
+      { username_lower: 1 }, { unique: true }
+    );
+
+    await db.collection("user_sessions").createIndex(
+      { expires_at: 1 }, { expireAfterSeconds: 0 }
+    );
+
+    await db.collection("repository_permissions").createIndex(
+      { user_id: 1, repository_id: 1 }, { unique: true }
+    );
 
     await connectNeo4j();
 
