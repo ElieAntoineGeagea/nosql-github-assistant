@@ -211,12 +211,12 @@ export default function App() {
           <section className="panel"><div className="panel-header"><div><h2>Trace an issue</h2><p>Find issue → pull request → commit → release paths</p></div></div><form className="filters" onSubmit={(event) => {event.preventDefault();traceIssue();}}>
             <label className="grow">ISSUE ID<input value={traceId} onChange={(e) => setTraceId(e.target.value)} placeholder="issue_42" required /></label>
             <button className="primary" type="submit" disabled={busy === 'trace'}>{busy === 'trace' ? 'Tracing...' : 'Trace issue'}</button></form></section>
-          {trace ? <section className="panel"><div className="panel-header"><div><h2>{trace.issue?.title || 'Issue'}</h2><p>{trace.count} matching paths</p></div></div>
+          {trace ? <section className="panel"><div className="panel-header"><div><h2>{trace.issue?.title || 'Issue'}</h2><p>{trace.count} linked path(s) · {trace.verified_release_paths ?? 0} verified release(s) · {trace.partial_paths ?? 0} path(s) awaiting release evidence</p></div></div>
             {trace.paths?.length ? trace.paths.map((path, i) => <div className="trace-path" key={i}>
               <div><small>PULL REQUEST</small><strong>#{path.pull_request?.number ?? '—'}</strong><p>{path.pull_request?.title || 'No title'}</p></div><span>→</span>
               <div><small>COMMIT</small><strong>{path.commit?.sha || '—'}</strong><p>{path.commit?.message || 'No message'}</p></div><span>→</span>
-              <div><small>RELEASE</small><strong>{path.release?.tag || '—'}</strong><p>{path.release?.id || 'Not available'}</p></div>
-            </div>) : <Empty title="No fix path recorded" text="This issue exists but no matching release path is stored yet." />}
+              <div className={!path.release ? 'unverified-release' : ''}><small>{path.release_verified ? 'VERIFIED RELEASE' : path.release ? 'RECORDED RELEASE' : 'RELEASE NOT VERIFIED'}</small><strong>{path.release?.tag || 'No verified release'}</strong><p>{path.release?.id || 'This commit has no confirmed release link yet.'}</p>{path.release && !path.release_verified && <p>Release evidence not independently verified.</p>}</div>
+            </div>) : <Empty title="No issue-to-PR relationship recorded" text="No linked pull request and merge commit were found for this issue in the imported graph." />}
           </section> : <section className="panel"><Empty title="Explore release history" text="Enter an issue ID to inspect its recorded source-control relationships." /></section>}
         </>}
 
