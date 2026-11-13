@@ -39,5 +39,7 @@ jobs:
           node --check src/ingestion/trace-evidence.js
           node --check src/ingestion/import-release-traces.js
           node --check src/scripts/import-release-traces.js
+          node --check src/services/trace-format.js
+          node --check src/server.js
       - name: Run unit tests
         run: npm test
