@@ -1,13 +1,33 @@
 const ROOT = import.meta.env.VITE_API_BASE_URL || '';
 
-async function get(path) {
-  const response = await fetch(ROOT + path, { headers: { Accept: 'application/json' } });
-  const data = await response.json().catch(() => {
-    throw new Error('Server returned invalid JSON');
-  });
-  if (!response.ok || data.success === false) {
-    throw new Error(data.error || 'Request failed: HTTP ' + response.status);
+export class ApiError extends Error {
+  constructor(message, status) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
   }
+}
+
+async function request(path, { token, method = 'GET', body } = {}) {
+  const headers = { Accept: 'application/json' };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
+
+  const response = await fetch(ROOT + path, {
+    method,
+    headers,
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    cache: 'no-store',
+  });
+
+  const data = await response.json().catch(() => {
+    throw new ApiError('Server returned invalid JSON', response.status);
+  });
+
+  if (!response.ok || data.success === false) {
+    throw new ApiError(data.error || `Request failed: HTTP ${response.status}`, response.status);
+  }
+
   return data;
 }
 
@@ -16,9 +36,15 @@ const params = (entries) => new URLSearchParams(
 );
 
 export const api = {
-  repositories: () => get('/api/repositories'),
-  issues: (repo) => get('/api/issues?' + params({ repository_id: repo })),
-  searchIssues: (repo, q, status, label) => get('/api/issues/search?' + params({repository_id: repo,q,status,label})),
-  searchDocs: (repo, q, release) => get('/api/search?' + params({repository_id:repo,q,release_id:release})),
-  trace: (id) => get('/api/issues/' + encodeURIComponent(id) + '/trace'),
+  login: (username, password) =>
+    request('/api/auth/login', { method: 'POST', body: { username, password } }),
+  me: (token) => request('/api/auth/me', { token }),
+  logout: (token) => request('/api/auth/logout', { token, method: 'POST' }),
+  repositories: (token) => request('/api/repositories', { token }),
+  issues: (repo, token) => request('/api/issues?' + params({ repository_id: repo }), { token }),
+  searchIssues: (repo, q, status, label, token) =>
+    request('/api/issues/search?' + params({ repository_id: repo, q, status, label }), { token }),
+  searchDocs: (repo, q, release, token) =>
+    request('/api/search?' + params({ repository_id: repo, q, release_id: release }), { token }),
+  trace: (id, token) => request('/api/issues/' + encodeURIComponent(id) + '/trace', { token }),
 };
